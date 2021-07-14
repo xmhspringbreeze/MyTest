@@ -1,0 +1,1839 @@
+﻿/*
+ * @(#)BusinessJdbcDao.java      create date 2009-1-2
+ *
+ * Copyright 2009 CEIBS All right reserved.
+ */
+package edu.ceibs.dao;
+
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+
+import org.apache.log4j.Logger;
+import org.springframework.jdbc.core.RowMapper;
+import org.springframework.jdbc.core.support.JdbcDaoSupport;
+import org.springframework.jdbc.support.lob.LobHandler;
+
+import com.oauth.client.CallbackServlet;
+
+import edu.ceibs.bidding.Admin;
+import edu.ceibs.bidding.CC;
+import edu.ceibs.bidding.ConflictRule;
+import edu.ceibs.bidding.Course;
+import edu.ceibs.bidding.Operation;
+import edu.ceibs.bidding.ParaTab;
+import edu.ceibs.bidding.Student;
+import edu.ceibs.bidding.TA;
+import edu.ceibs.edp.beans.Notice;
+import edu.ceibs.util.BusinessUtil;
+import edu.ceibs.util.TimePrinter;
+
+public class BusinessJdbcDao extends JdbcDaoSupport {
+	private static Logger logger = Logger.getLogger(BusinessJdbcDao.class);
+	
+	private LobHandler lobHandler;
+	
+	private TimePrinter timePrinter;
+
+	public LobHandler getLobHandler() {
+		return lobHandler;
+	}
+
+	public void setLobHandler(LobHandler lobHandler) {
+		this.lobHandler = lobHandler;
+	}
+	public TimePrinter getTimePrinter() {
+		return timePrinter;
+	}
+
+	public void setTimePrinter(TimePrinter timePrinter) {
+		this.timePrinter = timePrinter;
+	}
+	
+	public List  getMutipleCourseDetailList(String studentId,String courseCode) {
+		String sql="select STUDENT_ID,USER_ID,COURSE_ID,COURSE_NAME,GRADE from bb_bb60.interface_om_student_grade@bbdb_link bbcs\r\n" + 
+				"where student_id=? \r\n" + 
+				"and substr(COURSE_ID,0,instr(COURSE_ID,'-')-1)=?";
+		return getJdbcTemplate().queryForList(sql, new Object[] { studentId,courseCode});
+		
+	}
+	
+	public List  getMutipleCourseList() {
+		//------------------------
+		String sql="select STUDENT_ID,substr(COURSE_ID,0,instr(COURSE_ID,'-')-1) AS COURSE_CODE \r\n" + 
+				"from bb_bb60.interface_om_student_crsreg@bbdb_link o inner join  student_mgmt.v_courses_all_for_emba_shift  c\r\n" + 
+				"on o.course_id=c.courseid\r\n" + 
+				"where c.COURSESTARTDATE>'2015-01-01'\r\n" + 
+				"and c.courseType=1\r\n" + 
+				"and not (o.STUDENT_ID like 'FM%' OR o.STUDENT_ID like 'GE%' OR o.STUDENT_ID like 'EG%')\r\n" + 
+				"group by o.STUDENT_ID, substr(COURSE_ID,0,instr(COURSE_ID,'-')-1)  having count(*)>1 order by o.STUDENT_ID";
+		return getJdbcTemplate().queryForList(sql);
+	}
+	
+	public List getRptGroupByClass(String sch_courseId, String sch_bdate, String sch_edate, String sch_courseType){
+		String sql=" select s.user_class, sum(case when (to_date(c.coursestartdate, 'yyyy-mm-dd') - "
+	              + " to_date(to_char(t.create_time, 'yyyy-mm-dd'), 'yyyy-mm-dd') <= 7 and t.direction = 'O') then "
+	              + " 1 else 0 end) as less7out, "
+	              + " sum(case when (to_date(c.coursestartdate, 'yyyy-mm-dd') - "
+	              + " to_date(to_char(t.create_time, 'yyyy-mm-dd'), 'yyyy-mm-dd') <= 7 and t.direction = 'I') then "
+	              + " 1 else 0 end) as less7in, "
+	              + "sum(case when (to_date(c.coursestartdate, 'yyyy-mm-dd') - "
+	              + " to_date(to_char(t.create_time, 'yyyy-mm-dd'), 'yyyy-mm-dd') > 7 and t.direction = 'O') then "
+	              + " 1 else 0 end) as than7out, "
+	              + " sum(case when (to_date(c.coursestartdate, 'yyyy-mm-dd') - "
+	              + " to_date(to_char(t.create_time, 'yyyy-mm-dd'), 'yyyy-mm-dd') > 7 and t.direction = 'I') then "
+	              + " 1 else 0 end) as than7in "
+	              + " from operations t inner join student_mgmt.v_courses_all c on t.course_id = c.courseid "
+	              + " inner join student_mgmt.v_students s on t.object_id= s.user_id "
+	              + " where 1=1 "
+	              ;
+		if(!"".equals(sch_courseId)){
+			sql=sql+" and upper(t.course_id) like '%"+sch_courseId.toUpperCase()+"%'" ;
+		}
+		if(!"".equals(sch_bdate)){
+			sql=sql+" and to_date(to_char(t.create_time, 'yyyy-mm-dd'), 'yyyy-mm-dd')>=to_date('"+sch_bdate+"','yyyy-mm-dd') ";
+		}
+		if(!"".equals(sch_edate)){
+			sql=sql+" and to_date(to_char(t.create_time, 'yyyy-mm-dd'), 'yyyy-mm-dd')<1+to_date('"+sch_edate+"','yyyy-mm-dd') ";
+		}
+		if(!"".equals(sch_courseType)){
+			////1是必修课, 0选修
+			sql=sql+" and c.courseType="+sch_courseType+" " ;
+		}
+		
+		sql=sql+ " group by s.user_class ";
+		List list = getJdbcTemplate().queryForList(sql);
+		
+		//加一个totoal
+		int i1=0;
+		int i2=0;
+		int i3=0;
+		int i4=0;
+		for(int i=0;i<list.size();i++){
+			Map map = (Map)list.get(i);
+			int tmp=0;
+			try{
+				tmp=Integer.parseInt(map.get("LESS7OUT").toString());
+			}catch(Exception e){};
+			i1+=tmp;
+			
+			tmp=0;
+			try{
+				tmp=Integer.parseInt(map.get("LESS7IN").toString());
+			}catch(Exception e){};
+			i2+=tmp;
+			
+			tmp=0;
+			try{
+				tmp=Integer.parseInt(map.get("THAN7OUT").toString());
+			}catch(Exception e){};
+			i3+=tmp;
+			
+			tmp=0;
+			try{
+				tmp=Integer.parseInt(map.get("THAN7IN").toString());
+			}catch(Exception e){};
+			i4+=tmp;
+			
+		}
+		Map tmap=new HashMap();
+		tmap.put("USER_CLASS", "Total");
+		tmap.put("LESS7OUT", ""+i1);
+		tmap.put("LESS7IN", ""+i2);
+		tmap.put("THAN7OUT", ""+i3);
+		tmap.put("THAN7IN", ""+i4);
+		list.add(tmap);
+		
+		return list;
+		
+	}
+	
+	public List getRptGroupByCourse(String sch_classId, String sch_bdate, String sch_edate, String sch_courseType){
+		String sql=" select t.course_id, sum(case when (to_date(c.coursestartdate, 'yyyy-mm-dd') - "
+	              + " to_date(to_char(t.create_time, 'yyyy-mm-dd'), 'yyyy-mm-dd') <= 7 and t.direction = 'O') then "
+	              + " 1 else 0 end) as less7out, "
+	              + " sum(case when (to_date(c.coursestartdate, 'yyyy-mm-dd') - "
+	              + " to_date(to_char(t.create_time, 'yyyy-mm-dd'), 'yyyy-mm-dd') <= 7 and t.direction = 'I') then "
+	              + " 1 else 0 end) as less7in, "
+	              + "sum(case when (to_date(c.coursestartdate, 'yyyy-mm-dd') - "
+	              + " to_date(to_char(t.create_time, 'yyyy-mm-dd'), 'yyyy-mm-dd') > 7 and t.direction = 'O') then "
+	              + " 1 else 0 end) as than7out, "
+	              + " sum(case when (to_date(c.coursestartdate, 'yyyy-mm-dd') - "
+	              + " to_date(to_char(t.create_time, 'yyyy-mm-dd'), 'yyyy-mm-dd') > 7 and t.direction = 'I') then "
+	              + " 1 else 0 end) as than7in "
+	              + " from operations t inner join student_mgmt.v_courses_all c on t.course_id = c.courseid "
+	              + " inner join student_mgmt.v_students s on t.object_id= s.user_id "
+	              + " where 1=1 "
+	              ;
+		if(!"".equals(sch_classId)){
+			sql=sql+" and upper(s.user_class) like '%"+sch_classId.toUpperCase()+"%'" ;
+		}
+		if(!"".equals(sch_bdate)){
+			sql=sql+" and to_date(to_char(t.create_time, 'yyyy-mm-dd'), 'yyyy-mm-dd')>=to_date('"+sch_bdate+"','yyyy-mm-dd') ";
+		}
+		if(!"".equals(sch_edate)){
+			sql=sql+" and to_date(to_char(t.create_time, 'yyyy-mm-dd'), 'yyyy-mm-dd')<1+to_date('"+sch_edate+"','yyyy-mm-dd') ";
+		}
+		if(!"".equals(sch_courseType)){
+			////1是必修课, 0选修
+			sql=sql+" and c.courseType="+sch_courseType+" " ;
+		}
+		
+		sql=sql+ " group by t.course_id ";
+		List list= getJdbcTemplate().queryForList(sql);
+
+//		加一个totoal
+		int i1=0;
+		int i2=0;
+		int i3=0;
+		int i4=0;
+		for(int i=0;i<list.size();i++){
+			Map map = (Map)list.get(i);
+			int tmp=0;
+			try{
+				tmp=Integer.parseInt(map.get("LESS7OUT").toString());
+			}catch(Exception e){};
+			i1+=tmp;
+			
+			tmp=0;
+			try{
+				tmp=Integer.parseInt(map.get("LESS7IN").toString());
+			}catch(Exception e){};
+			i2+=tmp;
+			
+			tmp=0;
+			try{
+				tmp=Integer.parseInt(map.get("THAN7OUT").toString());
+			}catch(Exception e){};
+			i3+=tmp;
+			
+			tmp=0;
+			try{
+				tmp=Integer.parseInt(map.get("THAN7IN").toString());
+			}catch(Exception e){};
+			i4+=tmp;
+			
+		}
+		Map tmap=new HashMap();
+		tmap.put("COURSE_ID", "Total");
+		tmap.put("LESS7OUT", ""+i1);
+		tmap.put("LESS7IN", ""+i2);
+		tmap.put("THAN7OUT", ""+i3);
+		tmap.put("THAN7IN", ""+i4);
+		list.add(tmap);
+		
+		return list;
+		
+	}
+	
+	
+	//根据userId，获取相应的rule
+	/*public Map getRules(String userId){
+		Map result = new HashMap();
+		//String sql="select user_id, user_class, student_id,chinese_name,";
+		//1. 获取 student rule
+		result.put("Student", getStudent(userId));
+		//2. 获取 班主任 rule
+		result.put("CC", getCC(userId));
+//		3. 获取 TA rule
+		result.put("TA", getTA(userId));
+		//4. 获取 ADMIN rule
+		result.put("Admin", getAdmin(userId));
+		
+		return result;
+	}*/
+	//student_mgmt
+	/*
+	public String getPro(String courseId){
+		String sql ="select professors from student_mgmt.v_courses where COURSEID='AC01X-13BJ-150507'";
+		return (String)getJdbcTemplate().queryForObject(sql,String.class);
+	}*/
+	public Student getStudent(final String userId){
+		timePrinter.printTimePoint("--started--");
+		//2017-6-15 MAX_EED_CREDIT 和 MAX_FMBA_CREDIT学分，如果为空，那么就设为100（就是不做限制）
+		String sql = "select s.COORDINATOR_ID, nvl(sp.min_point,140) as MIN_POINT , s.EMBA_STUDENT_TYPE ,s.MAX_CREDIT,s.MIN_CREDIT,"
+			+ "nvl(s.MAX_EED_CREDIT,100) as MAX_EED_CREDIT,s.MIN_EED_CREDIT,"
+			+ "nvl(s.MAX_FMBA_CREDIT,100) as MAX_FMBA_CREDIT,s.MIN_FMBA_CREDIT, "
+			+ "case when c.elective_start_date<=sysdate and sysdate <=c.elective_end_date+1 then 1 else 0 end as ELECTIVE_FLAG ,"
+			+ " nvl2(oc.class_name,'Y','N'  ) as FIT_OLD_RULE ,"
+			+ "get_zone_manager_email(s.USER_CLASS) AS ZONE_MANAGER_EMAIL,"
+			+ " s.BBUSERPK1,s.CHINESE_NAME, s.ENGLISH_NAME, s.BIDDINGPOINTS, s.STUDENT_ID,s.USER_CLASS,s.USER_ID "
+			+ " from student_mgmt.v_STUDENTS s inner join student_class c on s.USER_CLASS=c.class_name "
+			
+			+" left join old_point_class oc on s.USER_CLASS=oc.class_name "
+			+ " left join STUDENT_MIN_POINT sp on s.STUDENT_ID=sp.STUDENT_ID "
+			
+			+ " where s.user_id='"+userId+"'" ;
+		List list = getJdbcTemplate().query(sql, new RowMapper() {
+			public Object mapRow(ResultSet rs, int rowNum) throws SQLException {
+				Student student = new Student();
+				student.setCcId(rs.getString("COORDINATOR_ID"));
+				student.setNameC(rs.getString("CHINESE_NAME"));
+				student.setNameE(rs.getString("ENGLISH_NAME"));
+				student.setPoints(rs.getInt("BIDDINGPOINTS"));
+				student.setStudentId(rs.getString("STUDENT_ID"));
+				student.setUserClass(rs.getString("USER_CLASS"));
+				student.setZoneManagerEmail(rs.getString("ZONE_MANAGER_EMAIL"));
+				
+				student.setUserId(rs.getString("USER_ID"));
+				student.setPk(rs.getString("BBUSERPK1"));
+				
+				student.setMaxCredit(rs.getFloat("MAX_CREDIT"));
+				student.setMinCredit(rs.getFloat("MIN_CREDIT"));
+				student.setMaxEdpCredit(rs.getFloat("MAX_EED_CREDIT"));
+				student.setMinEdpCredit(rs.getFloat("MIN_EED_CREDIT"));
+				student.setMaxFmbaCredit(rs.getFloat("MAX_FMBA_CREDIT"));
+				student.setMinFmbaCredit(rs.getFloat("MIN_FMBA_CREDIT"));
+				student.setStudentType(rs.getString("EMBA_STUDENT_TYPE"));
+				student.setElectiveFlag(rs.getBoolean("ELECTIVE_FLAG"));
+				
+				
+				student.setOldRuleFlag(rs.getString("FIT_OLD_RULE"));
+				student.setMinPoints(rs.getInt("MIN_POINT"));
+				//student.setElectiveFlag("Y".equals(rs.getString("ELECTIVE_FLAG")));
+				//hard code here, need to modify
+				//student.setStudentType("SH_CN");
+				//student.setPoints(777);
+				//System.out.println("isElectiveFlag = " +student.isElectiveFlag());
+				//TODO
+				//student.setMinCredit(5);
+				//student.setMaxCredit(6);
+				return student;
+			}
+		});
+		timePrinter.printTimePoint("--end--");
+		if (list.size() > 0) {
+			//2017 在vi_cs这个视图中加了一个字段Status，字段类型：Nvarchar
+			//当字段不为null，且split之后包含’2’时，则这门课程是标记为“重修”的课程
+			//学生登录进来后，如果有这个标记的课程是必修课。把这个课程加到 should_in 数据表中。
+			
+			//1. 查该学生有无重修的必修课程,(必须此后没有补进的)如有，放入should in 表
+			Student student=(Student) list.get(0);
+			sql=" select t.course_id,t.course_name, t.course_end from student_mgmt.v_course_student_swap4emba t "
+			+ " where t.CourseType=1  and  t.user_id='"+userId+"' and instr(','|| t.Status ||',',',2,') > 0";
+			List flist= getJdbcTemplate().queryForList(sql);
+			for(int i=0;i<flist.size();i++){
+				Map tmap=(Map)flist.get(i);
+				String courseId=(String)tmap.get("COURSE_ID");
+				String courseName=(String)tmap.get("COURSE_NAME");
+				String courseEnd=(String)tmap.get("COURSE_END");
+				//查看此后这个course_head有无补进的。
+				sql=" select count(*) from student_mgmt.v_course_student_swap4emba t "
+					+ " where t.CourseType=1  and  t.user_id='"+userId+"' "
+					+ " and to_date(t.course_start,'yyyy-mm-dd')>to_date('"+courseEnd+"','yyyy-mm-dd')"
+					+ " and get_course_head(t.course_id)=get_course_head('"+courseId+"')";
+				if(getJdbcTemplate().queryForInt(sql)==0){
+					//没有补进过。
+					sql="insert into should_in ( GROUP_NAME , COURSE_NAME, STUDENT_ID) values ("
+						+ "get_course_head('"+courseId+"'),'"+courseName+"','"+student.getStudentId()+"')"
+						;
+					try{
+						getJdbcTemplate().update(sql);
+					}catch(Exception e){
+						//数据库中 GROUP_NAME，STUDENT_ID 是pk健。这里要容错。
+						e.printStackTrace();
+					}
+				}
+			}
+
+			
+			
+			
+			//返回正开放的轮次
+			return student;
+		} else{
+			return null;
+		}
+		
+		
+	}
+	
+	public ParaTab getParaTab(){
+		String sql = "select LIMIT_DAY,FREE_TIMES, TA_CUT_POINT, CUT_POINT "
+					+ " ,student_PageC,student_PageE "
+					+ " ,cc_PageC,cc_PageE "
+					+ " ,ta_PageC,ta_PageE "
+					+ " ,admin_PageC,admin_PageE,course_length_limit "
+		            + " from Para_Tab where rownum=1" ;
+		List list = getJdbcTemplate().query(sql, new RowMapper() {
+			public Object mapRow(ResultSet rs, int rowNum) throws SQLException {
+				ParaTab pt= new ParaTab();
+				//pt.setCMinPoint(rs.getInt("C_MIN_POINT"));
+				//pt.setEMinPoint(rs.getInt("E_MIN_POINT"));
+				pt.setLimitDay(rs.getInt("LIMIT_DAY"));
+				pt.setFreeTimes(rs.getInt("FREE_TIMES"));
+				pt.setTaCutPoint(rs.getInt("TA_CUT_POINT"));
+				pt.setCutPoint(rs.getInt("CUT_POINT"));
+				pt.setCourseLengthLimit(rs.getInt("course_length_limit"));
+				
+				//String logonPage = lobHandler.getClobAsString(rs, "admin_PageE");
+				
+				pt.setStudentPageC(lobHandler.getClobAsString(rs, "student_PageC"));
+				pt.setStudentPageE(lobHandler.getClobAsString(rs, "student_PageE"));
+				pt.setCcPageC(lobHandler.getClobAsString(rs, "cc_PageC"));
+				pt.setCcPageE(lobHandler.getClobAsString(rs, "cc_PageE"));
+				pt.setTaPageC(lobHandler.getClobAsString(rs, "ta_PageC"));
+				pt.setTaPageE(lobHandler.getClobAsString(rs, "ta_PageE"));
+				pt.setAdminPageC(lobHandler.getClobAsString(rs, "admin_PageC"));
+				pt.setAdminPageE(lobHandler.getClobAsString(rs, "admin_PageE"));
+				return pt;
+			}
+		});
+		if (list.size() > 0) {
+			return (ParaTab) list.get(0);
+		} else{
+			return null;
+		}
+		
+		
+	}
+	public CC getCC(String userId){
+		timePrinter.printTimePoint("--started--");
+		String sql = "select CLASSNAME,coordinatorid from student_mgmt.v_classes where coordinatorid='"+userId+"'" ;
+		List classList=new ArrayList();
+				
+		List list = getJdbcTemplate().query(sql, new RowMapper() {
+			public Object mapRow(ResultSet rs, int rowNum) throws SQLException {
+				CC cc = new CC();
+				//cc.setNameC(rs.getString("CHINESE_NAME"));
+				cc.setUserId(rs.getString("coordinatorid"));
+				
+				classList.add(rs.getString("CLASSNAME"));
+				return cc;
+			}
+		});
+		timePrinter.printTimePoint("--end--");
+		if (list.size() > 0) {
+			//返回正开放的轮次
+			CC cc=(CC) list.get(0);
+			cc.setClassList(classList);
+			return cc;
+		} else{
+			return null;
+		}
+	}
+	
+	public TA getTA(String userId){
+		timePrinter.printTimePoint("--started--");
+		String sql = "select ta.COURSE_ID,firstname,user_id,  nvl2(z.email,'Y','N') as pm_flag  from student_mgmt.v_course_ta  ta "
+				+ " left join zone_manager z on ta.USER_ID||'@ceibs.edu'=z.email "
+				+ " where user_id='"+userId+"'" ;
+		List courseList=new ArrayList();
+		List list = getJdbcTemplate().query(sql, new RowMapper() {
+			public Object mapRow(ResultSet rs, int rowNum) throws SQLException {
+				TA cc = new TA();
+				
+				cc.setNameC(rs.getString("firstname"));
+				cc.setUserId(rs.getString("user_id"));
+				cc.setZonePMFlag(rs.getString("pm_flag"));
+				
+				courseList.add(rs.getString("COURSE_ID"));
+				return cc;
+			}
+		});
+		timePrinter.printTimePoint("--end--");
+		if (list.size() > 0) {
+			TA ta=(TA) list.get(0);
+			ta.setCourseList(courseList);
+			return ta;
+		} else{
+			return null;
+		}
+	}
+	
+	public List getAllAdmin(){
+		String sql = "select distinct user_id from admins where CONFLICT_EMAIL='Y'";
+		List list = getJdbcTemplate().queryForList(sql);	
+		return list;
+	}
+	public Admin getAdmin(String userId){
+		String sql = "select namec,user_id from admins where user_id='"+userId+"'" ;
+		List list = getJdbcTemplate().query(sql, new RowMapper() {
+			public Object mapRow(ResultSet rs, int rowNum) throws SQLException {
+				Admin cc = new Admin();
+				cc.setNameC(rs.getString("namec"));
+				cc.setUserId(rs.getString("user_id"));
+				
+				return cc;
+			}
+		});
+		if (list.size() > 0) {
+			//返回正开放的轮次
+			return (Admin) list.get(0);
+		} else{
+			return null;
+		}
+	}
+	
+	/**
+	public List getSelectedGroups(String student_id){
+		String sql = "select distinct student_id||'@'||get_group_new(course_id) as GRP  "
+			+ " from vi_cs where 1=1 ";
+			if(!"".equals(student_id) && null!=student_id) { 
+				sql = sql + " and student_id='" +student_id+ "' ";
+			}
+			List list = getJdbcTemplate().query(sql, new RowMapper() {
+			public Object mapRow(ResultSet rs, int rowNum) throws SQLException {
+				return(rs.getString("GRP"));
+			}
+		});
+		
+		return (list==null?new ArrayList():list);
+	}**/
+	
+	public boolean isSelectedInBB(String student_id,String groupName){
+		//return true;
+		
+		String sql = "select count(*) "
+			+ " from vi_cs where student_id='" +student_id+ "' "
+			+ " and get_group_new(course_id)='" +groupName+ "' ";
+		int i = getJdbcTemplate().queryForInt(sql);
+		return i>0;
+		
+	}
+	
+	//第一部分，vi_cs中没有，但是 本地表中有的。
+	public List getPart1(String student_id){
+		timePrinter.printTimePoint("--started--");
+		String sql = "select group_name as head, "
+			+ "nvl((select s.group_id from course_head_group s where s.course_head=group_name ),group_name) as group_name,"
+			+ "course_name  from should_in "
+				 + " where student_id = '" +student_id+ "' "
+				 + " and group_name not in "
+				 + " (select distinct get_group_new(course_id) "
+				 + " from vi_cs where student_id = '" +student_id+ "' "
+				 //+ " and (Status is null or instr(',' || Status || ',', ',2,') = 0)"
+				 + ") order by group_name ";
+		
+		List list = getJdbcTemplate().queryForList(sql);	
+		timePrinter.printTimePoint("--end--");
+		return list;
+	}
+	
+	//第二部分，vi_cs中，还没有开课的
+	public List getPart2(Student student){
+		return getPart23List(student,2);
+	}
+	
+	//第三部分，vi_cs中，已经开课的
+	public List getPart3(Student student){
+		return getPart23List(student,3);
+	}
+	
+	//获取所有选中的课程, 冲突检查的时候用。
+	public List getPart23(Student student){
+		return getPart23List(student,23);
+	}
+	
+	private List getPart23List(Student student, int partNumber){
+		timePrinter.printTimePoint("--started--");
+		
+		//c.  --> t
+		String sql = "select t.ISMULTITIME,t.NOTES,  decode(t.CourseType,0,'Y','N') as ELECTIVE_FLAG,  get_lang_desc(t.COURSE_LANGUAGE) as COURSE_LANGUAGE , "
+			+ " decode(t.CUTPOINTFLAG,1,'Y','N') as CUTPOINTFLAG, "
+			+ " d.pdf, d.pdf_e, t.PRE_REQUISITE, t.POST_REQUISITE, "
+			+ " get_group_new(t.course_id) as groupname, "
+			+ " get_course_head(t.course_id) as head, "
+			+ " case when to_date(t.course_start,'yyyy-mm-dd')-to_date(to_char(sysdate,'yyyy-mm-dd'),'yyyy-mm-dd')>(select limit_day from para_tab where rownum=1) then 'N' else 'Y' end as ta_flag   , "
+			//2017，30天前调课不扣点
+			+ " case when to_date(t.course_start,'yyyy-mm-dd')-to_date(to_char(sysdate,'yyyy-mm-dd'),'yyyy-mm-dd')>(select free_day from para_tab where rownum=1) then 'Y' else 'N' end as free_flag   , "
+			
+			+ " t.coursecredit, t.course_name, t.course_id, t.course_start, t.course_end, "
+			+ " decode(upper(t.courselocation),'SHANGHAI','上海Shanghai','上海','上海Shanghai',   'BEIJING','北京Beijing','北京','北京Beijing',   'SHENZHEN','深圳Shenzhen','深圳','深圳Shenzhen',t.courselocation) as courselocation, "
+			+ " t.seatcount,t.seatleft ,get_professor(t.COURSE_ID) as faculty_name ,"
+			+ " get_ta(t.COURSE_ID) as ta,  get_ta_id(t.COURSE_ID) as ta_id "
+			+ " from vi_cs t "
+			+ " left join course_doc d on t.course_id=d.course_id "
+			
+			+ " where nvl(t.delete_flag,0)<>1 and t.student_id='" +student.getStudentId()+ "' "
+			
+			//2017 有重修标记的课程不应该在已经完成课程里出现。
+			//+ " and (t.Status is null or instr(','|| t.Status ||',',',2,') = 0) "
+			
+			//2016-5-5注释了下面一行，选中的课程不受这个限制
+			//+ " and t.happeningdept='" +student.getStudentDept()+"' ";
+			;
+		/**
+		if(student.isChineseClass()){//中文班学生不能选英文课程
+			sql = sql + " and get_lang_desc(t.COURSE_LANGUAGE)<>'英文English' ";
+		}	**/
+			
+			sql=sql
+			+ " and (t.CourseType=1  "; //1是必修课
+			//+ " and to_date(course_start,'yyyy-mm-dd')"
+			if(student.isElectiveFlag()){
+				sql = sql+" or t.CourseType=0 "; //0是选修课
+			}
+			
+			sql=sql+")";
+			if(partNumber!=23){
+				sql=sql+ " and (to_date(t.course_end,'yyyy-mm-dd')+1)"
+					+ (partNumber==2?">":"<=")
+						+ "sysdate ";
+			}
+			sql=sql+ " order by t.course_start ";
+		
+		List list = getJdbcTemplate().query(sql, new RowMapper() {
+			public Object mapRow(ResultSet rs, int rowNum) throws SQLException {
+				Course course = new Course();
+				course.setCourseCredit(rs.getString("coursecredit"));
+				course.setCourseName(rs.getString("course_name"));
+				course.setGroupName(rs.getString("groupname"));
+				course.setHead(rs.getString("head"));
+				course.setCourseId(rs.getString("course_id"));
+				course.setCourseStartDate(rs.getString("course_start"));
+				course.setCourseEndDate(rs.getString("course_end"));
+				course.setCourseLocation(rs.getString("courselocation"));
+				course.setSeatCount(rs.getInt("seatcount"));
+				course.setSeatLeft(rs.getInt("seatleft"));
+				course.setProfessor(rs.getString("faculty_name"));
+				course.setTa(rs.getString("ta"));
+				course.setTaId(rs.getString("ta_id"));
+				
+				//course.setTaFlag("Y");
+				course.setTaFlag(rs.getString("ta_flag"));
+				
+				course.setFreeFlag(rs.getString("free_flag"));
+				
+				course.setCourseLanguage((rs.getString("COURSE_LANGUAGE")));
+				
+				course.setElectiveFlag(rs.getString("ELECTIVE_FLAG"));
+				course.setCutPointFlag(rs.getString("CUTPOINTFLAG"));
+				
+				course.setPreRequisite(rs.getString("PRE_REQUISITE"));
+				course.setPostRequisite(rs.getString("POST_REQUISITE"));
+				
+				
+				course.setNotes(rs.getString("NOTES"));
+				course.setIsMultTime(rs.getString("ISMULTITIME"));
+				course.setPdfC(rs.getString("pdf"));
+				course.setPdfE(rs.getString("pdf_e"));
+				return course;
+			}
+		});
+		timePrinter.printTimePoint("--end--");
+		return list;
+		
+	}
+	
+	
+	public List getStudentList(String sch_studentName,String sch_studentId,String sch_studentClass, String sch_orderBy, String sch_orderType,String sch_ccClass){
+		timePrinter.printTimePoint("--started--");
+		if("".equals(sch_orderBy)){
+			sch_orderBy = "1";
+		}
+		if("".equals(sch_orderType)){
+			sch_orderType = "asc";
+		}
+		String sql = "select to_char(BBUSERPK1) as BBUSERPK1, to_char(biddingpoints) as biddingpoints , "
+			+ " user_id, student_id,USER_CLASS, chinese_name as NAME_C "
+			+ " from student_mgmt.v_students where USER_CLASS in (select class_name from student_class) ";
+		String s0 = ((sch_studentName));
+		String s1 = ((sch_studentId));
+		String s2 = ((sch_studentClass));
+		if (!"".equals(s0)){
+			sql += " and upper(chinese_name) like '%"+ s0.toUpperCase() +"%' ";
+		}
+		
+		if (!"".equals(s1)){
+			sql += " and upper(student_id) like '%"+ s1.toUpperCase() +"%' ";
+		}
+		
+		if (!"".equals(s2)){
+			sql += " and upper(user_class) like '%"+ s2.toUpperCase() +"%' ";
+		}
+		
+		//CC登录找学生，必须限定在cc班级里。
+		if (!"".equals(sch_ccClass)){
+			sql +=" and user_class in"+sch_ccClass;
+		}
+		
+		
+		if("1".equals(sch_orderBy)){
+			sql+=" order by student_id ";
+		}else{
+			sql+=" order by nlssort(chinese_name,'NLS_SORT=SCHINESE_PINYIN_M') ";
+		}
+		if("asc".equals(sch_orderType)){
+			sql+=" asc ";
+		}else{
+			sql+=" desc ";
+		}
+		
+		
+		
+		
+		List list = getJdbcTemplate().queryForList(sql);	
+		timePrinter.printTimePoint("--end--");
+		return list;
+	}
+	public List getReqOperationList(String sch_courseName,String sch_classId,
+			String sch_studentId,String sch_studentName,String sch_bdate,
+			String sch_edate){
+		return getOperationList( sch_courseName, sch_classId,
+				 sch_studentId, sch_studentName, sch_bdate,
+				 sch_edate, "A" );
+	}
+	
+	public List getElecOperationList(String sch_courseName,String sch_classId,
+			String sch_studentId,String sch_studentName,String sch_bdate,
+			String sch_edate){
+		return getOperationList( sch_courseName, sch_classId,
+				 sch_studentId, sch_studentName, sch_bdate,
+				 sch_edate, "B" );
+	}
+	
+	
+	
+	private List getOperationList(String sch_courseName,String sch_classId,
+			String sch_studentId,String sch_studentName,String sch_bdate,
+			String sch_edate, String course_property ){
+		//必修课调课查询
+		timePrinter.printTimePoint("--started--");
+		String sql = "select c.coursecredit, get_lang_desc(c.COURSE_LANGUAGE) as COURSE_LANGUAGE , v.user_class，v.student_id,v.chinese_name,(c.coursename) as coursename, "
+			+ " get_group_new(c.courseid) as GROUP_NAME ,"
+			+ " get_course_head(c.courseid) as head, c.courseid, "
+			+ " to_char(c.seatcount) as seatcount,"
+			+ " to_char(case when c.seatleft<0 then 0 else c.seatleft end) as seatleft,"
+			+ " get_ta(C.COURSEID) as ta, get_ta_id(C.COURSEID) as ta_id, "
+			+ " c.coursestartdate,c.courseenddate," //c.courselocation, "
+			+ " decode(upper(c.courselocation),'SHANGHAI','上海Shanghai','上海','上海Shanghai',   'BEIJING','北京Beijing','北京','北京Beijing',   'SHENZHEN','深圳Shenzhen','深圳','深圳Shenzhen',c.courselocation) as courselocation, "
+			//+ " decode(o.direction,'I','补进','O','调出',' ') as direction, "
+			+ " o.direction, "
+			+ " get_professor(C.COURSEID) as faculty_name , o.operator_id,o.operator_rule, to_char( decode(cut_flag,'Y',cut_point,0)) as cut_point, " //xxxxxss
+			+ " to_char(o.create_time,'yyyy-mm-dd hh24:mi:ssxff') as create_time "
+			+ " from operations o inner join student_mgmt.v_students v on o.object_id=v.user_id "
+			+ " inner join student_mgmt.v_courses_all c on o.course_id = c.courseid "
+			
+			//+ " left join student_mgmt.v_course_professors p on o.course_id = p.course_id "
+			+ " where  1=1  "
+			;
+		
+		if(!"".equals(sch_courseName) && null!=sch_courseName) {
+			//要求可以同时匹配课程名称，课程号
+			sql = sql + " AND (upper(c.coursename) like '%"+sch_courseName.toUpperCase()+"%' or upper(c.courseid) like '%"+sch_courseName.toUpperCase()+ "%' )";
+		}
+		
+		if(!"".equals(sch_classId) && null!=sch_classId) {
+			sql = sql + " AND upper(v.user_class) like '%"+sch_classId.toUpperCase()+"%'  ";
+		}
+		
+		if(!"".equals(sch_studentId) && null!=sch_studentId) {
+			sql = sql + " AND upper(v.student_id) like '%"+sch_studentId.toUpperCase()+"%'  ";
+		}
+		
+		if(!"".equals(sch_studentName) && null!=sch_studentName) {
+			sql = sql + " AND upper(v.chinese_name) like '%"+sch_studentName.toUpperCase()+"%'  ";
+		}
+		
+		if(!"".equals(sch_bdate) && null!=sch_bdate) {
+			sql = sql + " AND o.CREATE_TIME >= to_date('"+sch_bdate+"','yyyy-mm-dd') ";
+		}
+		if(!"".equals(sch_edate) && null!=sch_edate) {
+			sql = sql + " AND o.CREATE_TIME <= to_date('"+sch_edate+"','yyyy-mm-dd')+1  ";
+		}
+		//if(!"".equals(sch_courseProperty) && null!=sch_courseProperty) {
+			sql = sql + " AND nvl(o.course_property,'A')='"+course_property+"' ";
+		//}
+		
+		sql = sql + " order by v.student_id, ";
+		if("A".equals(course_property)){
+			sql = sql + " c.coursename,o.create_time,";
+		}
+		if("B".equals(course_property)){
+			sql = sql + " o.create_time desc,c.coursename,";
+		}
+		
+		sql = sql + "o.direction desc ";
+		
+		List list = getJdbcTemplate().queryForList(sql);	
+		timePrinter.printTimePoint("--end--");
+		return list;
+	}
+	
+	//获取选中的选修课的总学分
+	public float getTotalCredit4Elective(String studentId){
+		timePrinter.printTimePoint("--started--");
+		float totalCredit=0;
+		//String sql="select nvl(1000*sum(cs.coursecredit),0) from vi_cs cs "
+		//	+ " where cs.coursetype=0 and cs.student_id='"+studentId+"'"
+			//2017，重修的课程不算学分
+			//+ " and (cs.Status is null or instr(','|| cs.Status ||',',',2,') = 0)"
+			;
+		
+			//2020-9-1，添加了student_mgmt.v_course_student_swap4emba，包含了所有的课程。
+			//以前的student_mgmt.v_course_student_swap只包含了参加调课的课程
+		String sql="select nvl(1000*sum(cs.coursecredit),0) from student_mgmt.v_course_student_swap4emba cs "
+				+ " where cs.coursetype=0 and cs.student_id='"+studentId+"'"
+				+ " and (cs.Status is null or instr(','|| cs.Status ||',',',2,') = 0)"
+				;
+		
+		try{
+			int a=getJdbcTemplate().queryForInt(sql);
+			totalCredit=a/1000F;
+		}catch(Exception e){
+			e.printStackTrace();
+		}
+		
+		timePrinter.printTimePoint("--end--");
+		return totalCredit;
+	}
+	
+	
+	//获取选中的（不参加调课）选修课的总学分
+		public float getTotalCredit4Elective2(String studentId){
+			timePrinter.printTimePoint("--started--");
+			float totalCredit=0;
+				//2020-9-1，添加了student_mgmt.v_course_student_swap4emba，包含了所有的课程。
+				//以前的student_mgmt.v_course_student_swap只包含了参加调课的课程
+			String sql="select nvl(1000*sum(cs.coursecredit),0) from student_mgmt.v_course_student_swap4emba cs "
+					+ " where cs.coursetype=0 and cs.student_id='"+studentId+"'"
+					+ " and (cs.Status is null or instr(','|| cs.Status ||',',',2,') = 0)"
+					+ " and cs.Attendswap=0"  //不参加调课）选修课
+					;
+			
+			try{
+				int a=getJdbcTemplate().queryForInt(sql);
+				totalCredit=a/1000F;
+			}catch(Exception e){
+				e.printStackTrace();
+			}
+			
+			timePrinter.printTimePoint("--end--");
+			return totalCredit;
+		}
+		
+		//获取选中的（不参加调课）选修课的fmba学分
+				public float getTotalCredit4Elective2FMBA(String studentId){
+					timePrinter.printTimePoint("--started--");
+					float totalCredit=0;
+						//2020-9-1，添加了student_mgmt.v_course_student_swap4emba，包含了所有的课程。
+						//以前的student_mgmt.v_course_student_swap只包含了参加调课的课程
+					String sql="select nvl(1000*sum(cs.coursecredit),0) from student_mgmt.v_course_student_swap4emba cs "
+							+ " where cs.coursetype=0 and cs.student_id='"+studentId+"'"
+							+ " and (cs.Status is null or instr(','|| cs.Status ||',',',2,') = 0)"
+							+ " and cs.Attendswap=0"  //不参加调课）选修课
+							+ " and cs.COURSECATEGORY='FMBA'"
+							;
+					
+					try{
+						int a=getJdbcTemplate().queryForInt(sql);
+						totalCredit=a/1000F;
+					}catch(Exception e){
+						e.printStackTrace();
+					}
+					
+					timePrinter.printTimePoint("--end--");
+					return totalCredit;
+				}
+				//获取选中的（不参加调课）选修课的edp学分
+				public float getTotalCredit4Elective2EDP(String studentId){
+					timePrinter.printTimePoint("--started--");
+					float totalCredit=0;
+						//2020-9-1，添加了student_mgmt.v_course_student_swap4emba，包含了所有的课程。
+						//以前的student_mgmt.v_course_student_swap只包含了参加调课的课程
+					String sql="select nvl(1000*sum(cs.coursecredit),0) from student_mgmt.v_course_student_swap4emba cs "
+							+ " where cs.coursetype=0 and cs.student_id='"+studentId+"'"
+							+ " and (cs.Status is null or instr(','|| cs.Status ||',',',2,') = 0)"
+							+ " and cs.Attendswap=0"  //不参加调课）选修课
+							+ " and cs.COURSECATEGORY='EDP'"
+							;
+					
+					try{
+						int a=getJdbcTemplate().queryForInt(sql);
+						totalCredit=a/1000F;
+					}catch(Exception e){
+						e.printStackTrace();
+					}
+					
+					timePrinter.printTimePoint("--end--");
+					return totalCredit;
+				}
+		
+	//检查选课时间,code冲突用（包括无学分课程）
+	public List getSelectedCourseList(String studentId){
+		timePrinter.printTimePoint("--started--");
+		
+		/*
+		String sql = "SELECT c.ISMULTITIME, c.NOTES, get_group_new(c.courseid) as groupname, decode(c.CUTPOINTFLAG,1,'Y','N') as CUTPOINTFLAG , get_lang_desc(c.COURSE_LANGUAGE) as COURSE_LANGUAGE,"
+			    + " case when to_date(c.COURSESTARTDATE,'yyyy-mm-dd')-sysdate>(select limit_day from para_tab where rownum=1) then 'N' else 'Y' end as ta_flag   , "
+			    + " decode(cs.course_id,null,'N','Y') as FLAG,C.COURSECREDIT, C.COURSENAME, C.COURSEID, C.COURSESTARTDATE, "
+				+ " C.COURSEENDDATE, " //C.COURSELOCATION, 
+				+ " decode(upper(c.courselocation),'SHANGHAI','上海Shanghai','上海','上海Shanghai',   'BEIJING','北京Beijing','北京','北京Beijing',   'SHENZHEN','深圳Shenzhen','深圳','深圳Shenzhen',c.courselocation) as courselocation, "
+				+ " C.SEATCOUNT, C.SEATLEFT ,get_professor(C.COURSEID) as faculty_name ,"
+				+ " get_ta(C.COURSEID) as ta ,get_ta_id(C.COURSEID) as ta_id "
+				+ " FROM student_mgmt.v_COURSES C inner join (select course_id from student_mgmt.v_course_student_swap where student_id = '"
+				+studentId+"') cs on c.courseid =cs.course_id "
+				//+ " left join student_mgmt.v_course_professors p on c.courseid = p.course_id "
+				+ " WHERE nvl(c.delete_flag,0)<>1  "
+				+ " and (c.CourseType=1 or c.CourseType=0)  " 
+				+ " order by c.coursestartdate ";*/
+		
+		
+		String sql = "SELECT nvl(i.bbcode,'N') as IGNORE_DATE  , get_group_new(C.COURSE_ID) as GROUP_NAME, C.COURSE_NAME,C.COURSE_ID, C.COURSE_START,C.COURSE_END,c.PRE_REQUISITE, c.POST_REQUISITE,"
+			+ " decode(upper(c.courselocation),'SHANGHAI','上海Shanghai','上海','上海Shanghai','BEIJING','北京Beijing','北京','北京Beijing','SHENZHEN','深圳Shenzhen','深圳','深圳Shenzhen',c.courselocation) as courselocation "
+			
+			//课程的时间跨度
+			+", case when (c.course_start is null or c.course_end is null) then 999 else to_date(c.course_end, 'yyyy-mm-dd') - to_date(c.course_start, 'yyyy-mm-dd') end as course_length "
+			
+			//根据需求20201021-01，改选课的view为student_mgmt.v_courses_student_switch
+			//+ " FROM student_mgmt.v_course_student_swap4emba C "
+			+ " FROM student_mgmt.v_courses_student_switch C "
+			
+			//20210222,添加不检测日期冲突的课程
+			+ " left join IGNORE_DATE_COURSE i on c.COURSE_ID=i.bbcode "
+			
+			//2020-6-25 c.CourseType = 2 无学分课程
+			+ " WHERE nvl(c.delete_flag, 0) <> 1 and (c.CourseType = 1 or c.CourseType = 0 or c.CourseType = 2) "
+			//2020-9-22要求，不参加调课的课程，也要检测日期冲突，所以注释了下面
+			//+ " and attendswap=1 " //2017,该字段1表示要检测日期冲突的课程
+			
+			//2020-11-01开始，也要检测code冲突，所以要包括所有的课程。
+			//+ " and to_date(c.course_start,'yyyy-mm-dd')+1> sysdate " //还没有开课的课程，才有日期冲突检测的必要
+			
+			//20210223,把不及格的过滤掉。以免code冲突
+			+" and (Status is null or instr(',' || Status || ',', ',2,') = 0) "
+			
+			+ " and  student_id = '"+studentId+"' order by c.course_start ";		
+		List list = getJdbcTemplate().query(sql, new RowMapper() {
+			public Object mapRow(ResultSet rs, int rowNum) throws SQLException {
+				
+				Course course = new Course();
+				course.setGroupName(rs.getString("GROUP_NAME"));
+				course.setCourseName(rs.getString("COURSE_NAME"));
+				course.setCourseStartDate(rs.getString("COURSE_START"));
+				course.setCourseEndDate(rs.getString("COURSE_END"));
+				course.setCourseLocation(rs.getString("courselocation"));
+				course.setPostRequisite(rs.getString("POST_REQUISITE"));
+				course.setPreRequisite(rs.getString("PRE_REQUISITE"));
+				course.setCourseId(rs.getString("COURSE_ID"));
+				
+				course.setCourseLength(rs.getInt("course_length"));
+				
+				course.setIgnoreDate(!("N".equals(rs.getString("IGNORE_DATE"))));
+				
+				
+				
+				return course;
+				
+				
+			}
+		});	
+		timePrinter.printTimePoint("--end--");
+		return list;
+	}
+	
+	public boolean updateCourseGroup(final String m_sCourseId, String m_sCourseGroup){
+		if(m_sCourseId==null||"".equals(m_sCourseId)){
+			return false;
+		}
+		if(m_sCourseGroup==null) m_sCourseGroup="";
+		String sql ="update course_group set group_name=? where course_id=?";
+		int i = getJdbcTemplate().update(sql, new Object[] { m_sCourseGroup,m_sCourseId});
+		return i>0;
+	}
+	
+	public List getCourseGroupList(final String sch_courseName,final String sch_courseId, final String sch_courseGroup){
+		
+		String sql = "SELECT group_name, "
+			+ " get_lang_desc(c.COURSE_LANGUAGE) as COURSE_LANGUAGE,"
+			+ " decode(c.CUTPOINTFLAG,1,'Y','N') as CUTPOINTFLAG,"
+			    + " C.COURSECREDIT, C.COURSENAME, C.COURSE_ID, C.COURSESTARTDATE, "
+				+ " C.COURSEENDDATE, " //C.COURSELOCATION, 
+				+ " decode(upper(c.courselocation),'SHANGHAI','上海Shanghai','上海','上海Shanghai',   'BEIJING','北京Beijing','北京','北京Beijing',   'SHENZHEN','深圳Shenzhen','深圳','深圳Shenzhen',c.courselocation) as courselocation, "
+				+ " get_professor(C.COURSE_ID) as faculty_name ,"
+				+ " get_ta(C.COURSE_ID) as ta "
+				+ " FROM course_group C  "
+				+ " WHERE nvl(c.delete_flag,0)<>1  "
+				+ " and (c.CourseType=1 or c.CourseType=0)   " ;
+		
+		if(!"".equals(sch_courseName) && null!=sch_courseName) {
+			sql = sql + " AND (c.coursename like '%"+sch_courseName+"%'  )";
+		}
+		if(!"".equals(sch_courseId) && null!=sch_courseId) {
+			sql = sql + " AND (c.course_id like '%"+sch_courseId+ "%' )";
+		}
+		if(!"".equals(sch_courseGroup) && null!=sch_courseGroup) {
+			sql = sql + " AND group_name='"+sch_courseGroup+"' ";
+		}
+		sql = sql + " order by c.coursename ";
+		
+		List list = getJdbcTemplate().query(sql, new RowMapper() {
+			public Object mapRow(ResultSet rs, int rowNum) throws SQLException {
+				Course course = new Course();
+				course.setGroupName(rs.getString("group_name"));
+				course.setCourseLanguage((rs.getString("COURSE_LANGUAGE")));
+				//course.setSelectedFlag(rs.getString("FLAG"));
+				course.setCourseCredit(rs.getString("coursecredit"));
+				course.setCourseName(rs.getString("coursename"));
+				
+				course.setCourseId(rs.getString("course_id"));
+				course.setCourseStartDate(rs.getString("coursestartdate"));
+				course.setCourseEndDate(rs.getString("courseenddate"));
+				course.setCourseLocation(rs.getString("courselocation"));
+				course.setProfessor(rs.getString("faculty_name"));
+				course.setTa(rs.getString("ta"));
+				course.setCutPointFlag(rs.getString("CUTPOINTFLAG"));
+				
+				
+				return course;
+			}
+		});	
+		return list;
+	}
+	
+	public List getCourseList(String currentRule,Student student, final String sch_groupName,String sch_bdate, 
+			String sch_edate,String sch_location,String sch_language,String sch_leftSeat){
+		//必修课查找
+		
+		timePrinter.printTimePoint("--started--");
+		String sql = "SELECT coalesce(c.ISMULTITIME,cs.ISMULTITIME) as ISMULTITIME, "
+			+ "coalesce(c.NOTES,cs.NOTES) as NOTES, "
+			+ "decode(coalesce(c.CUTPOINTFLAG,cs.CUTPOINTFLAG),1,'Y','N') as CUTPOINTFLAG , "
+			+ "get_lang_desc(coalesce(c.COURSE_LANGUAGE,cs.COURSE_LANGUAGE)) as COURSE_LANGUAGE,"
+			+ " get_course_head(coalesce(c.courseid,cs.course_id)) as head, "
+			+ "coalesce(c.PRE_REQUISITE,cs.PRE_REQUISITE) as PRE_REQUISITE, "
+			+ "coalesce(c.POST_REQUISITE,cs.POST_REQUISITE) as POST_REQUISITE,"
+			    + " case when to_date(coalesce(c.COURSESTARTDATE,cs.COURSE_START),'yyyy-mm-dd')-to_date(to_char(sysdate,'yyyy-mm-dd'),'yyyy-mm-dd')>(select limit_day from para_tab where rownum=1) then 'N' else 'Y' end as ta_flag   , "
+			    + " decode(cs.course_id,null,'N','Y') as FLAG,"
+			    + " coalesce(c.coursecredit,cs.coursecredit) as coursecredit, "
+			    + " coalesce(to_char(c.coursename), to_char(cs.course_name)) as coursename, "
+			    + " coalesce(c.courseid,cs.course_id) as COURSEID, "
+			    + " coalesce(c.coursestartdate,cs.COURSE_START) as coursestartdate, "
+				+ " coalesce(c.courseenddate,cs.COURSE_END) as courseenddate, "
+				+ " decode(upper(coalesce(c.courselocation,cs.courselocation)),'SHANGHAI','上海Shanghai','上海','上海Shanghai',   'BEIJING','北京Beijing','北京','北京Beijing',   'SHENZHEN','深圳Shenzhen','深圳','深圳Shenzhen',coalesce(c.courselocation,cs.courselocation)) as courselocation, "
+				+ " to_char(coalesce(c.seatcount,cs.seatcount)) as SEATCOUNT,"
+				//+ " TO_CHAR( decode(sign(coalesce(c.seatleft,cs.seatleft)),-1,0,coalesce(c.seatleft,cs.seatleft))) AS SEATLEFT ,"
+				+ " get_professor(coalesce(c.courseid,cs.course_id)) as faculty_name ,"
+				+ " get_ta(coalesce(c.courseid,cs.course_id)) as ta, get_ta_id(coalesce(c.courseid,cs.course_id)) as ta_id "
+				
+				//2017 v_COURSES 改成  v_courses_all_for_emba_shift
+				+ " FROM student_mgmt.v_courses_all_for_emba_shift C full join (select * from vi_cs where student_id = '"
+				+student.getStudentId()+"' and CourseType = 1) cs on c.courseid =cs.course_id "
+				//+ " left join student_mgmt.v_course_professors p on c.courseid = p.course_id "
+				//+ " WHERE nvl(c.delete_flag,0)<>1 and  c.COURSEID LIKE '"+sch_groupName+"-%' "
+				+ " WHERE nvl(c.delete_flag,0)<>1 "
+				+ "and  get_group_new(c.COURSEID)= '"+sch_groupName+"' " 
+				+ " and (c.CourseType=1 )  " 
+				
+				//2020-05-27 要求attendswap=0的课程，不允许调入，不显示在系统里。
+				+ " and c.attendswap=1 "
+				
+				//2017-11要求13个月后开课的课程不显示     2021-1-20要求，去除该限制
+				//+ " and to_date( c.coursestartdate,'yyyy-mm-dd')<add_months(sysdate,13) "
+				
+				+ " and c.happeningdept='" +student.getStudentDept()+"' ";;
+				
+		if(student.isChineseClass()){//中文班学生不能选英文课程
+				sql = sql + " and get_lang_desc(c.COURSE_LANGUAGE)<>'英文English' ";
+		}
+		
+		
+		if(!"ALL".equals(sch_leftSeat)){
+			//sql = sql + "  and c.seatleft>0 " ;
+		}
+		
+		
+//		9. 单中文课程，国际班英文学生看不到。  GEMBA_E
+		if("GEMBA_E".equals(student.getStudentType())){
+			sql = sql + " and get_lang_desc(c.COURSE_LANGUAGE)<>'中文Chinese' ";
+		}
+				if(!"".equals(sch_bdate) && null!=sch_bdate) {
+					sql = sql + " AND c.COURSESTARTDATE >= '"+sch_bdate+"'  ";
+				}
+				if(!"".equals(sch_edate) && null!=sch_edate) {
+					sql = sql + " AND c.COURSESTARTDATE <= '"+sch_edate+"'  ";
+				}
+				
+				if("SH".equals(sch_location)) {
+					sql = sql + " AND (upper(c.courselocation)='SHANGHAI' or upper(c.courselocation)='上海'  ) ";
+				}
+				if("SZ".equals(sch_location)) {
+					sql = sql + " AND (upper(c.courselocation)='SHENZHEN' or upper(c.courselocation)='深圳'  ) ";
+				}
+				if("BJ".equals(sch_location)) {
+					sql = sql + " AND (upper(c.courselocation)='BEIJING' or upper(c.courselocation)='北京'  ) ";
+				}
+				
+				if("C".equals(sch_language)) {
+					sql = sql + " AND get_lang_desc(c.COURSE_LANGUAGE)='中文Chinese' ";
+				}
+				if("E".equals(sch_language)) {
+					sql = sql + " AND get_lang_desc(c.COURSE_LANGUAGE)='英文English' ";
+				}
+				if("B".equals(sch_language)) {
+					sql = sql + " AND get_lang_desc(c.COURSE_LANGUAGE)='双语Bilingual' ";
+				}
+//				2014-11-14修改成
+				//student, cc 课程开始后就不能选择。
+				if("student".equals(currentRule)||"cc".equals(currentRule)){
+					sql = sql + " AND to_date(c.COURSESTARTDATE,'yyyy-mm-dd') > sysdate "; // 必须是还没有开课的
+				}
+				
+//				TA调入调出的时间限制是END DATE的24点
+				if ("ta".equals(currentRule)){
+					sql = sql + " AND (to_date(c.COURSEENDDATE,'yyyy-mm-dd')+1) > sysdate ";
+				}
+				
+//				Admin调出调入没有时间限制
+				if ("admin".equals(currentRule)){
+					//
+				}
+
+				//sql = sql + " OR cs.COURSE_ID LIKE '"+sch_groupName+"-%' "; //已经选中的课程，不受搜索条件限制
+				sql = sql + " OR (get_group_new(cs.COURSE_ID)= '"+sch_groupName+"' "  //已经选中的课程，不受搜索条件限制，
+				//+ " and (cs.Status is null or instr(',' || cs.Status || ',', ',2,') = 0)"//2017但是补修的课程，不能出现
+				+ ")";
+				
+				sql = sql + " order by FLAG desc, c.COURSESTARTDATE  ";
+				/*+ " AND COURSESTARTDATE >= '""' AND '' "
+				+ " AND COURSELOCATION = '' ";*/
+		
+		List list = getJdbcTemplate().query(sql, new RowMapper() {
+			public Object mapRow(ResultSet rs, int rowNum) throws SQLException {
+				Course course = new Course();
+				course.setSelectedFlag(rs.getString("FLAG"));
+				course.setCourseCredit(rs.getString("coursecredit"));
+				course.setCourseName(rs.getString("coursename"));
+				course.setGroupName(sch_groupName);
+				course.setHead(rs.getString("head"));
+				course.setCourseId(rs.getString("courseid"));
+				course.setCourseStartDate(rs.getString("coursestartdate"));
+				course.setCourseEndDate(rs.getString("courseenddate"));
+				course.setCourseLocation(rs.getString("courselocation"));
+				course.setSeatCount(rs.getInt("seatcount"));
+				//course.setSeatLeft(rs.getInt("seatleft"));
+				course.setProfessor(rs.getString("faculty_name"));
+				course.setTa(rs.getString("ta"));
+				course.setTaId(rs.getString("ta_id"));
+				course.setTaFlag(rs.getString("ta_flag"));
+				course.setCourseLanguage((rs.getString("COURSE_LANGUAGE")));
+				course.setCutPointFlag(rs.getString("CUTPOINTFLAG"));
+				//course.setCutPointFlag("N");
+				course.setNotes(rs.getString("NOTES"));
+				course.setIsMultTime(rs.getString("ISMULTITIME"));
+				
+				course.setPreRequisite(rs.getString("PRE_REQUISITE"));
+				course.setPostRequisite(rs.getString("POST_REQUISITE"));
+				return course;
+			}
+		});	
+		timePrinter.printTimePoint("--end--");
+		return list;
+	}
+	
+public Course getCourse(final String courseId){
+	timePrinter.printTimePoint("--started--");
+		String sql = "SELECT c.ISMULTITIME, c.NOTES, 'N' as FLAG,C.COURSECREDIT, C.COURSENAME, C.COURSEID, C.COURSESTARTDATE, "
+				+ " C.COURSEENDDATE, to_char(c.COURSEPK1) as coursePK,  c.PRE_REQUISITE, c.POST_REQUISITE, " //C.COURSELOCATION,
+				+ "get_lang_desc(c.COURSE_LANGUAGE) as COURSE_LANGUAGE,"
+				
+				+ " get_group_new(C.COURSEID) as groupname, "
+				
+				+ " decode(upper(c.courselocation),'SHANGHAI','上海Shanghai','上海','上海Shanghai',   'BEIJING','北京Beijing','北京','北京Beijing',   'SHENZHEN','深圳Shenzhen','深圳','深圳Shenzhen',c.courselocation) as courselocation, "
+				+ " C.SEATCOUNT, C.SEATLEFT,get_professor(C.COURSEID) as faculty_name ,"
+				+ " get_ta(C.COURSEID) as ta , get_ta_id(C.COURSEID) as ta_id "
+				+ " FROM student_mgmt.v_COURSES_all c WHERE c.COURSEID = '"+courseId+"'   "
+				;
+				
+		List list = getJdbcTemplate().query(sql, new RowMapper() {
+			public Object mapRow(ResultSet rs, int rowNum) throws SQLException {
+				Course course = new Course();
+				course.setSelectedFlag(rs.getString("FLAG"));
+				course.setCourseCredit(rs.getString("coursecredit"));
+				course.setCourseName(rs.getString("coursename"));
+				course.setGroupName(rs.getString("groupname"));
+				course.setCourseId(rs.getString("courseid"));
+				course.setCourseStartDate(rs.getString("coursestartdate"));
+				course.setCourseEndDate(rs.getString("courseenddate"));
+				course.setCourseLocation(rs.getString("courselocation"));
+				course.setCourseLanguage(rs.getString("COURSE_LANGUAGE"));
+				course.setSeatCount(rs.getInt("seatcount"));
+				course.setSeatLeft(rs.getInt("seatleft"));
+				course.setProfessor(rs.getString("faculty_name"));
+				course.setTa(rs.getString("ta"));
+				course.setTaId(rs.getString("ta_id"));
+				course.setCoursePK(rs.getString("coursePK"));
+				
+				course.setNotes(rs.getString("NOTES"));
+				course.setIsMultTime(rs.getString("ISMULTITIME"));
+				
+				course.setPreRequisite(rs.getString("PRE_REQUISITE"));
+				course.setPostRequisite(rs.getString("POST_REQUISITE"));
+				return course;
+			}
+		});	
+		timePrinter.printTimePoint("--end--");
+		if(list==null||list.isEmpty()) return null;	
+		return (Course)list.get(0);
+	}
+	
+public void updateNotice(Notice n){
+	String sql="update notice set "
+		+"FORCLASS=?,"
+		  +"BDATE=to_date(?,'yyyy-mm-dd'),"
+		  +"EDATE=to_date(?,'yyyy-mm-dd'),"
+		  +"CONTENT=?,"
+		  +"TITLE=? "
+		   
+		+"where id=?";
+	getJdbcTemplate().update(sql, new Object[]{n.forClass,n.bdate,n.edate,n.content,n.title,n.id});
+}
+public void delNotice(String id){
+	String sql="delete notice where id=?";
+	getJdbcTemplate().update(sql, new Object[]{	id	});
+}
+public void insertNotice(Notice n){
+	String sql = "select to_char(nvl(max(id),0)+1) from notice ";
+	n.id=(String)getJdbcTemplate().queryForObject(sql, String.class);
+	
+	
+	sql="insert into notice(ID,FORCLASS,BDATE,EDATE,TITLE,CONTENT) values(?,?,TO_DATE(?,'YYYY-MM-DD'),TO_DATE(?,'YYYY-MM-DD'),?,?)";
+	getJdbcTemplate().update(sql, new Object[]{
+			n.id,n.forClass,n.bdate,n.edate,n.title,n.content
+	});
+}
+public Map getNotice(String id){
+	String sql="select to_char(id) as id, forclass,to_char(bdate,'yyyy-mm-dd') as bdate, "
+		+ "to_char(edate,'yyyy-mm-dd') as edate,content,title from notice "
+		+ " where id=?";
+	return getJdbcTemplate().queryForMap(sql,new Object[]{id});
+	
+}
+
+	public void insertOperation(Operation o){
+		String sql = "insert into OPERATIONS (OPERATOR_ID ,OPERATOR_RULE , "
+			+ "OBJECT_ID , COURSE_ID ,DIRECTION ,CUT_POINT ,CREATE_TIME ,REMARK,remark7d,CUT_FLAG,COURSE_PROPERTY )values("
+			+ "'"+o.operatorId+ "',"
+			+ "'"+o.operatorRule+ "',"
+			+ "'"+o.objectId+ "',"
+			+ "'"+o.courseId+ "',"
+			+ "'"+o.direction+ "',"
+			+ o.cutPoint+ ","
+			+ "TO_TIMESTAMP('" +o.createTime+"','yyyy-mm-dd hh24:mi:ssxff'),"
+			+ "'"+o.remark+ "',"
+			+ "'"+o.remark7d+ "',"
+			+ "'"+o.cutPointFlag+ "',"
+			+ "'" + o.courseProperty + "')" ;
+		getJdbcTemplate().update(sql);
+		
+		if("I".equals(o.direction)){
+			//调入操作，要把should in表的记录删除。要根据groupname来判断
+			//sql = "delete should_in where group_name=get_group_new('"+o.courseId+"' ) and student_id='"+o.objStudentId +"'";
+			sql = "delete should_in where (group_name=get_course_head('"+o.courseId+"' ) or group_name in (select course_head from course_head_group where group_id=get_group_new('"+o.courseId+"'))     ) "
+				+ " and student_id='"+o.objStudentId +"'";
+			getJdbcTemplate().update(sql);
+		}else{
+			if(!"elective".equals(o.remark)){
+			//如果必修课 调出操作，要在should in表增加记录
+				sql = "insert into SHOULD_IN(GROUP_NAME,COURSE_NAME,STUDENT_ID) values("
+					+ "get_course_head('"+o.courseId+"' ),"
+					//+ "get_group_new('"+o.courseId+"' ),"
+					+ "(select coursename from student_mgmt.v_courses_all where courseid= '"+o.courseId+"'  and rownum=1 ),"
+					
+					+ "'"+o.objStudentId+"')"
+					;
+				try{
+					getJdbcTemplate().update(sql);
+				}catch(Exception e){};
+			}
+		}
+	}
+	
+	public String getTimestamp(){
+		String sql = "select to_char(systimestamp,'yyyy-mm-dd hh24:mi:ssxff') from dual";
+		Object obj = getJdbcTemplate().queryForObject(sql, String.class);
+		return (String)obj;
+	}
+	
+	public int getFreeTimesForOut(String userId){
+		String sql = "select count(*) from OPERATIONS where OBJECT_ID='"+userId+ "' and DIRECTION='O' "
+		+ " and cut_point=0 "  
+		+ " and get_limit_flag(course_id,create_time)='N' " //7天内不算入freetime次数
+		+ " and CUT_FLAG='Y'"; //课程级别的免费，也不算次数
+		return getJdbcTemplate().queryForInt(sql);
+	}
+	/*2017-11后被取代
+	public int getLeaveSeat(String courseId){
+		timePrinter.printTimePoint("--started--");
+		String sql = "select nvl(seatleft,0) from student_mgmt.v_courses_all where courseId='"+courseId+ "'  ";
+		int i= getJdbcTemplate().queryForInt(sql);
+		timePrinter.printTimePoint("--end--");
+		return i;
+	}*/
+	
+	public Map getMailTemplate(String type){
+		String sql= "select subject,content from mail_template where to_mail='"+type+"' and rownum=1 ";
+		return getJdbcTemplate().queryForMap(sql);
+	}
+	
+	public Set getTaSet(String outId, String inId){
+		timePrinter.printTimePoint("--started--");
+		Set result = new HashSet();
+		String sql;
+		if(outId!=null && !"".equals(outId)){
+			sql = "select USER_ID from student_mgmt.v_course_ta where course_id='"+outId+"'";
+			List list = getJdbcTemplate().queryForList(sql);	
+			for(int i=0;i<list.size();i++){
+				Map tmap = (Map)list.get(i);
+				result.add(tmap.get("USER_ID"));
+			}
+		}
+		
+		if(inId!=null && !"".equals(inId)){
+			sql = "select USER_ID from student_mgmt.v_course_ta where course_id='"+inId+"'";
+			List list = getJdbcTemplate().queryForList(sql);	
+			for(int i=0;i<list.size();i++){
+				Map tmap = (Map)list.get(i);
+				result.add(tmap.get("USER_ID"));
+			}
+		}
+		
+		
+		timePrinter.printTimePoint("--end--");
+		return result; 
+	}
+	
+	public Set getTaSet(String outId, String inAId, String inBId){
+		timePrinter.printTimePoint("--started--");
+		Set result = new HashSet();
+		String sql;
+		if(outId!=null && !"".equals(outId)){
+			sql = "select USER_ID from student_mgmt.v_course_ta where course_id='"+outId+"'";
+			List list = getJdbcTemplate().queryForList(sql);	
+			for(int i=0;i<list.size();i++){
+				Map tmap = (Map)list.get(i);
+				result.add(tmap.get("USER_ID"));
+			}
+		}
+		
+		if(inAId!=null && !"".equals(inAId)){
+			sql = "select USER_ID from student_mgmt.v_course_ta where course_id='"+inAId+"'";
+			List list = getJdbcTemplate().queryForList(sql);	
+			for(int i=0;i<list.size();i++){
+				Map tmap = (Map)list.get(i);
+				result.add(tmap.get("USER_ID"));
+			}
+		}
+		if(inBId!=null && !"".equals(inBId)){
+			sql = "select USER_ID from student_mgmt.v_course_ta where course_id='"+inBId+"'";
+			List list = getJdbcTemplate().queryForList(sql);	
+			for(int i=0;i<list.size();i++){
+				Map tmap = (Map)list.get(i);
+				result.add(tmap.get("USER_ID"));
+			}
+		}
+		timePrinter.printTimePoint("--end--");
+		return result; 
+	}
+	
+	//如果找不到注册，返回null;
+	public String getRegPK(Course course, String studentPK){
+		timePrinter.printTimePoint("--started--");
+		String sql="select to_char(reg_pk1) as regPK from vi_cs "
+			+ " where user_pk1='"+studentPK+"' and course_id='"+course.getCourseId()+"' and rownum=1";
+		String s = (String)getJdbcTemplate().queryForObject(sql, String.class);
+		
+		timePrinter.printTimePoint("--end--");
+		
+		
+		return s ;
+	}
+	
+	public String getCoursePK(String courseId){
+		timePrinter.printTimePoint("--started--");
+		String sql="select to_char(COURSEPK1) as coursePK from student_mgmt.v_courses_all "
+			+ " where courseid='" + courseId + "' and rownum=1";
+		String s = (String)getJdbcTemplate().queryForObject(sql, String.class);
+		timePrinter.printTimePoint("--end--");
+		return s;
+	}
+	
+	
+	public List getMutipleCourse(String studentId){
+		timePrinter.printTimePoint("--started--");
+		String sql="select t.STUDENT_ID,max(c.COURSENAME) as COURSENAME, get_group_new(c.courseid) as GROUP_NAME "
+			+ " from vi_cs t inner join student_mgmt.v_courses_all c on t.COURSE_ID = c.COURSEID "
+			+ " where (c.COURSETYPE=1 or c.COURSETYPE=0 ) and c.delete_flag<>1  and t.STUDENT_ID = '"+studentId+"' "
+			+ " group by t.STUDENT_ID, get_group_new(c.courseid) having count(*) > 1";
+		List list = getJdbcTemplate().queryForList(sql);
+		timePrinter.printTimePoint("--end--");
+		return list;
+	}
+	
+	//studentType参数为 EMBA,HEMBA
+	public List getStudents(String sch_classId,String sch_studentId,String sch_name,String studentType){
+		//sch_classId = "11BJ-4";
+		//sch_studentId = "113219";
+		timePrinter.printTimePoint("--started--");
+		
+		
+		String sql="select BBUSERPK1,CHINESE_NAME, ENGLISH_NAME, BIDDINGPOINTS, STUDENT_ID,USER_CLASS,USER_ID from student_mgmt.v_students where 1=1 ";
+			//sql = sql + " and USER_CLASS in (select class_name from student_class)  ";
+		//2017 毕业的学生不需要检测，仅仅在读的EMBA学生。
+		sql = sql + " and status=0 and user_type='"+studentType+"' ";
+		if(sch_classId!=null && !"".equals(sch_classId)){
+			sql = sql + " and upper(user_class) = '"+ sch_classId.toUpperCase() +"' ";
+		}
+		if(sch_studentId!=null && !"".equals(sch_studentId)){
+			sql = sql + " and upper(student_id) = '"+ sch_studentId.toUpperCase() +"' ";
+		}
+		if(sch_name!=null && !"".equals(sch_name)){
+			sql = sql + " and upper(CHINESE_NAME) like '%"+ sch_name.toUpperCase() +"%' ";
+		}
+		sql = sql + " order by STUDENT_ID ";
+		//sql="select BBUSERPK1,CHINESE_NAME, ENGLISH_NAME, BIDDINGPOINTS, STUDENT_ID,USER_CLASS,USER_ID from student_mgmt.v_students where "
+		//	+ " user_id in "
+			//+ "('tzhiqiang.e14bj3','xxiaowei.e14sh5')"
+			//+ " (select distinct t.object_id  from operations t where t.create_time > to_date('2015-3-1', 'yyyy-mm-dd')  and t.direction = 'I')"
+			;
+		List list = getJdbcTemplate().query(sql, new RowMapper() {
+			public Object mapRow(ResultSet rs, int rowNum) throws SQLException {
+				Student student = new Student();
+				student.setNameC(rs.getString("CHINESE_NAME"));
+				student.setNameE(rs.getString("ENGLISH_NAME"));
+				student.setPoints(rs.getInt("BIDDINGPOINTS"));
+				student.setStudentId(rs.getString("STUDENT_ID"));
+				student.setUserClass(rs.getString("USER_CLASS"));
+				student.setUserId(rs.getString("USER_ID"));
+				student.setPk(rs.getString("BBUSERPK1"));
+				
+//				hard code here, need to modify
+				//student.setStudentType("SH_CN");
+				
+				return student;
+			}
+		});
+		timePrinter.printTimePoint("--end--");
+		return list;
+		
+	}
+	
+	public List getDocs(){
+		String sql="select inner_text, link,inner_text_e, link_e from download_doc "
+			+ " where nvl(del_flag,'N')<>'Y' order by rank desc" ;
+		return getJdbcTemplate().queryForList(sql);
+	}
+	
+	public void logWS(String operator,String object,String action,String remark,String result,String timeStamp){
+		System.out.println("-----------result length = "+result.length());
+		if(result.length()>2999){
+			result=result.substring(0,2999);
+		}
+		result=result.replace("'", "''");
+		String sql = "insert into WSLOGS(OPERATOR , OBJECT, ACTION, REMARK,LOG_TIME,RESULT, OPER_TIME )values("
+			+ "?,"
+			+ "?,"
+			+ "?,"
+			+ "?,"
+			+ "sysdate,"
+			+ "'"+result +"',"
+			+ "TO_TIMESTAMP('" +timeStamp+"','yyyy-mm-dd hh24:mi:ssxff'))" ;
+		//getJdbcTemplate().update(sql);
+		try {
+			logger.info(operator+",  "+object+",  "+action+",  "+remark+",  "+result+",  "+timeStamp);
+		}catch(Exception e) {
+			e.printStackTrace();
+			System.out.println(operator+",  "+object+",  "+action+",  "+remark+",  "+result+",  "+timeStamp);
+		}
+		try {
+			//2019-11-07发现神奇的现象， 有时候往wslogs表写会报BadSqlGrammarException错误，无法理解这种现象
+			//只能先try catch，免得错误往外抛。
+			getJdbcTemplate().update(sql, new Object[] { operator,object, action,remark});
+		}catch(Exception e) {
+			//System.out.println("write to wslogs table failed.  sql="+sql);
+			result=BusinessUtil.getExceptionStack(e);
+			try {
+				logger.error("write to wslogs table failed.    "+ operator+",  "+object+",  "+action+",  "+remark+",  "+result+",  "+timeStamp);
+			}catch(Exception ee) {
+				ee.printStackTrace();
+				System.out.println("write to wslogs table failed.    "+operator+",  "+object+",  "+action+",  "+remark+",  "+result+",  "+timeStamp);
+			}
+			//e.printStackTrace();
+		}
+	}
+	/*
+	public List getConflictCourse(String sch_classId,String sch_studentId){
+		
+		 //获取满足条件的学生，每个学生做循环
+		List result = new ArrayList();
+		
+		if(l==null||l.isEmpty()){
+			return result ;
+		}
+		for(int i=0;i<l.size();i++){
+			Map map = (Map)l.get(i);
+			String studentId = (String)map.get("STUDENT_ID");
+			
+		}
+		return null;
+	}
+	*/
+	//根据指定的groupname，获取该group里面的所有课程名称，和pdf链接。
+	/*
+	public List getCoursesByGroupName(final String groupName){
+		if(groupName==null|| "".equals(groupName)) return new ArrayList();
+		String sql="select COURSE_HEAD from course_head_group where group_id=? ";
+		List list = getJdbcTemplate().queryForList(sql,new Object[] {groupName} );
+		if(list.isEmpty()) {
+			Map t = new HashMap();
+			t.put("COURSE_HEAD",groupName);
+			list.add(t);	
+		}
+		String filter="";
+		for(int i=0;i<list.size();i++){
+			Map map=(Map)list.get(i);
+			if(i==0){
+				filter+=" c.courseid like '" +map.get("COURSE_HEAD")+ "%'";
+			}else{
+				filter+=" or c.courseid like '" +map.get("COURSE_HEAD")+ "%'";
+			}
+		}
+		//System.out.println(filter);
+		sql="select distinct coursename,pdf,pdf_e from student_mgmt.v_courses c "
+			+" left join course_doc d on c.courseid=d.course_id where "+filter;
+		list=getJdbcTemplate().queryForList(sql);
+			
+		return list;
+		
+	}*/
+	public List getXuanInfo(String currentRule,Student student,String args[]){
+		timePrinter.printTimePoint("--started--");
+		//选修课
+		String sch_bdate = args[0];
+		String sch_edate = args[1];
+		String sch_location = args[2];
+		String sch_language = args[3];
+		String sch_courseName=args[4];
+		String sch_courseId=  args[5];
+		String sch_leftSeat = args[6];
+		
+		String sql = "select coalesce(c.COURSECATEGORY,cs.COURSECATEGORY) as COURSECATEGORY, "
+			+ "nvl2(cs.course_id,'on','' ) as checked,  "
+			+ "decode(c.CourseType,0,'Y','N') as ELECTIVE_FLAG,  "
+			+ "get_lang_desc(coalesce(c.COURSE_LANGUAGE,cs.COURSE_LANGUAGE)) as COURSE_LANGUAGE , "
+			+ " get_group_new(coalesce(c.courseid,cs.course_id)) as groupname, "
+			+ "coalesce(c.ISMULTITIME,cs.ISMULTITIME) as ISMULTITIME, "
+			+ "coalesce(c.NOTES,cs.NOTES) as NOTES, "
+			+ "coalesce(c.PRE_REQUISITE,cs.PRE_REQUISITE) as PRE_REQUISITE, "
+			+ "coalesce(c.POST_REQUISITE,cs.POST_REQUISITE) as POST_REQUISITE,"
+			+ " case when to_date(coalesce(c.COURSESTARTDATE,cs.COURSE_START),'yyyy-mm-dd')-to_date(to_char(sysdate,'yyyy-mm-dd'),'yyyy-mm-dd')>(select limit_day from para_tab where rownum=1) then 'N' else 'Y' end as ta_flag   , "
+			+ " coalesce(c.coursecredit,cs.coursecredit) as coursecredit, "
+			+ " coalesce(to_char(c.coursename), to_char(cs.course_name)) as coursename, "
+			+ " coalesce(c.courseid,cs.course_id) as courseid, "
+			+ " coalesce(c.coursestartdate,cs.COURSE_START) as coursestartdate, "
+			+ " coalesce(c.courseenddate,cs.COURSE_END) as courseenddate, "
+			+ " decode(upper(coalesce(c.courselocation,cs.courselocation)),'SHANGHAI','上海Shanghai','上海','上海Shanghai',   'BEIJING','北京Beijing','北京','北京Beijing',   'SHENZHEN','深圳Shenzhen','深圳','深圳Shenzhen',coalesce(c.courselocation,cs.courselocation)) as courselocation, "
+			+ " to_char(coalesce(c.seatcount,cs.seatcount)) as SEATCOUNT,"
+			//+ " TO_CHAR( decode(sign(coalesce(c.seatleft,cs.seatleft)),-1,0,coalesce(c.seatleft,cs.seatleft))) AS SEATLEFT ,"
+			//+ " get_professor(coalesce(c.courseid,cs.course_id)) as faculty_name ,"
+			+ " d.pdf, d.pdf_e, "
+			+ " get_ta(coalesce(c.courseid,cs.course_id)) as ta,  get_ta_id(coalesce(c.courseid,cs.course_id)) as ta_id "
+			
+			//2017-6-15选课，只能用有效课程。//2017-11-24  v_courses改成  v_courses_all_for_emba_shift 
+			+ " from student_mgmt.v_courses_all_for_emba_shift c full join  (select * from vi_cs where student_id = '"
+				+student.getStudentId()+"' and CourseType = 0) cs on c.courseid =cs.course_id "
+			+ " left join course_doc d on c.courseid=d.course_id "
+			+ " where nvl(c.delete_flag,0)<>1  "
+			
+			//2020-05-27 要求attendswap=0的课程，不允许调入，不显示在系统里。
+			+ " and c.attendswap=1 "
+			
+			+ " and c.happeningdept='" +student.getStudentDept()+"' "
+			//(10).选修课调课需要增加一个限制方式: 具体课程的BB_CODE和班级号的对应(即某班不能选具体的某一门课程)。
+			+ " and not c.courseid in (select course_id from exceptions where class_id='"+student.getUserClass()+"') "
+			
+//			(2015-7-15).选修课调课需要增加一个限制方式: 具体课程的BB_CODE和学生类别对应(比如， GEMBA_E不能选具体的某一门课程)。
+			+ " and not c.courseid in (select course_id from type_exceptions where student_type='"+student.getStudentType()+"') "
+			
+			
+			//(13).EDP的课程和FMBA的课程只能调出，无法调入(包括cc和admin都不能调入)。
+			+ " and c.COURSECATEGORY='EMBA' "
+			
+			//2017-11要求13个月后开课的课程不显示    2021-1-20要求，去除该限制
+			//+ " and to_date( c.coursestartdate,'yyyy-mm-dd')<add_months(sysdate,13) "
+			;
+		
+		//9. 单中文课程，国际班英文学生看不到。  GEMBA_E
+		if("GEMBA_E".equals(student.getStudentType())){
+			sql = sql + " and get_lang_desc(c.COURSE_LANGUAGE)<>'中文Chinese' ";
+		}
+		
+		if(!"ALL".equals(sch_leftSeat)){
+			//sql = sql + "  and c.seatleft>0 " ;
+		}
+		
+		if(!"".equals(sch_bdate) && null!=sch_bdate) {
+			sql = sql + " AND c.COURSESTARTDATE >= '"+sch_bdate+"'  ";
+		}
+		if(!"".equals(sch_edate) && null!=sch_edate) {
+			sql = sql + " AND c.COURSESTARTDATE <= '"+sch_edate+"'  ";
+		}
+		
+		if("SH".equals(sch_location)) {
+			sql = sql + " AND (upper(c.courselocation)='SHANGHAI' or upper(c.courselocation)='上海'  ) ";
+		}
+		if("SZ".equals(sch_location)) {
+			sql = sql + " AND (upper(c.courselocation)='SHENZHEN' or upper(c.courselocation)='深圳'  ) ";
+		}
+		if("BJ".equals(sch_location)) {
+			sql = sql + " AND (upper(c.courselocation)='BEIJING' or upper(c.courselocation)='北京'  ) ";
+		}
+		
+		if("C".equals(sch_language)) {
+			sql = sql + " AND get_lang_desc(c.COURSE_LANGUAGE)='中文Chinese' ";
+		}
+		if("E".equals(sch_language)) {
+			sql = sql + " AND get_lang_desc(c.COURSE_LANGUAGE)='英文English' ";
+		}
+		if("B".equals(sch_language)) {
+			sql = sql + " AND get_lang_desc(c.COURSE_LANGUAGE)='双语Bilingual' ";
+		}
+		
+		if(!"".equals(sch_courseName) && null!=sch_courseName){
+			sql=sql+" and upper(c.coursename) like '%"+sch_courseName.toUpperCase()+"%' ";
+		}
+		if(!"".equals(sch_courseId) && null!=sch_courseId){
+			sql=sql+" and upper(c.courseid) like '%"+sch_courseId.toUpperCase()+"%' ";
+		}
+		
+
+//		2014-11-14修改成
+		//student, cc 课程开始后就不能选择。
+		if("student".equals(currentRule)||"cc".equals(currentRule)){
+			sql = sql + " AND to_date(c.COURSESTARTDATE,'yyyy-mm-dd') > sysdate "; // 必须是还没有开课的
+		}
+		
+//		TA调入调出的时间限制是END DATE的24点
+		if ("ta".equals(currentRule)){
+			sql = sql + " AND (to_date(c.COURSEENDDATE,'yyyy-mm-dd')+1) > sysdate ";
+		}
+		
+//		Admin调出调入没有时间限制
+		if ("admin".equals(currentRule)){
+			//
+		}
+		
+			sql=sql	+ " and (c.CourseType=0)   ";
+			
+			//已经选中的选修课课程，必须显示出来
+			sql = sql+" or (not cs.course_id is null  and (cs.CourseType=0)  )"
+			
+			+ " order by groupname,checked,c.coursestartdate ";
+		
+		
+		
+		List list= getJdbcTemplate().queryForList(sql);
+		timePrinter.printTimePoint("--end--");
+		return list;
+	}
+	
+	
+	
+	public List getAllRules(){
+		String sql = "select type,rule_code,description,course_group, max_number from course_conflict \n"
+			       + "where is_valid='Y'" ;
+     
+		List list = getJdbcTemplate().query(sql, new RowMapper() {
+			public Object mapRow(ResultSet rs, int rowNum) throws SQLException {
+				ConflictRule cr = new ConflictRule();
+				cr.setType(rs.getString("TYPE"));
+				cr.setRuleCode(rs.getString("RULE_CODE"));
+				cr.setDescription(rs.getString("DESCRIPTION"));
+				cr.setMaxNumber(rs.getInt("MAX_NUMBER"));
+				cr.setCourseGroup(rs.getString("COURSE_GROUP"));
+				return cr;
+			}
+		});
+		return list;
+	}
+	
+	public String getGroupById(final String courseId){
+		String sql ="select get_group_new(?) from dual";
+		return (String)getJdbcTemplate().queryForObject(sql,new Object[] {courseId},String.class);
+	}
+	
+	public List getMultTime(final String courseId){
+		String sql="select to_char(STARTTIME,'YYYY-MM-DD') as STARTTIME  ,  to_char(ENDTIME,'YYYY-MM-DD') as ENDTIME  from student_mgmt.v_courses_multi_time where COURSEID=? order by STARTTIME";
+			return getJdbcTemplate().queryForList(sql,new Object[] {courseId});
+	}
+	
+	public List getAllPreRequisiteCourseId(String preHead){
+		return getAllCourseIdByHead(preHead);
+	}
+	public List getAllPostRequisiteCourseId(String postHead){
+		return getAllCourseIdByHead(postHead);
+	}
+	
+	//根据指定的head，返回该head同一个group下面的所有course id。
+	private List getAllCourseIdByHead(String preHead){
+		//1. 根据head，找这个group下面的所有head
+		String sql="select s.course_head from course_head_group s "
+			+ " where s.group_id=("
+			+ "select t.group_id from course_head_group t where t.course_head=?)";
+		List list = getJdbcTemplate().queryForList(sql,new Object[] {preHead});
+		List lst ;
+		if(list.isEmpty()){
+			sql="select t.COURSEID from student_mgmt.v_courses_all t where t.COURSEID like ?";
+			lst =  getJdbcTemplate().queryForList(sql,new Object[] {preHead});
+		}else{
+			sql="select t.COURSEID from student_mgmt.v_courses_all t where ";
+			for(int i=0;i<list.size();i++){
+				Map tmap=(Map)list.get(i);
+				if(i>0) sql+=" or ";
+				sql+=" t.COURSEID like '"+ tmap.get("COURSE_HEAD")+ "-%' ";
+			}
+			lst =  getJdbcTemplate().queryForList(sql);
+		}
+		List result = new ArrayList();
+		for(int i=0;i<lst.size();i++){
+			Map m = (Map)lst.get(i);
+			result.add(m.get("COURSEID"));
+		}
+		return result;
+		
+	}
+	/*
+	public List getRptList(
+		    sch_courseId,
+	        sch_classId,
+	        sch_bdate,
+	        sch_edate,
+	        sch_courseType,
+	        sch_grpBy
+	        ){
+		
+	}
+	*/
+	/*//被getPart23代替
+	public List getSelectedCourse(Student student){
+		String sql = "select distinct b.code from d a.student_id='";
+		
+		List list = getJdbcTemplate().query(sql, new RowMapper() {
+			public Object mapRow(ResultSet rs, int rowNum) throws SQLException {
+				String courseCode = rs.getString("CODE");
+				return courseCode;
+			}
+		});
+		return list;
+	}*/
+	
+	public List getNoticeList(String clazz){
+		String sql="select to_char(id) as id, forclass,to_char(bdate,'yyyy-mm-dd') as bdate, "
+			+ "to_char(edate,'yyyy-mm-dd') as edate,content,title from notice "
+			+ " where (UPPER(forclass) like ? or UPPER(forclass)='ALL' ) "
+			+ " and sysdate >= bdate and sysdate<=(edate+1)"
+			+ " order by rank desc";
+		return getJdbcTemplate().queryForList(sql,new Object[] {"%"+clazz.toUpperCase()+"%"});
+	}
+	
+	public int getStartHours(String yyyymmdd){
+		String sql="select (sysdate - to_date(?,'yyyy-mm-dd'))*24 from dual";
+		return getJdbcTemplate().queryForInt(sql,new Object[] {yyyymmdd});
+	}
+	////////////////////////////////////////
+	public boolean getLocker( ){ 
+		try{
+			String sql = "insert into LOCKER_TAB (F1) values (1)";
+			getJdbcTemplate().execute(sql);
+		}catch(Exception e){
+			//e.printStackTrace();
+			return false;
+		}
+		return true; 
+	} 
+	
+	public void openLocker( ){ 
+		try{
+			String sql = "delete LOCKER_TAB";
+			getJdbcTemplate().execute(sql);
+		}catch(Exception e){
+			e.printStackTrace();
+			
+		}
+		return; 
+	} 
+	
+	public void log(String ip,String hostName,String content){
+		String sql = "insert into TASK_LOG(ip,host_name,content,time) values(?,?,?,systimestamp)";
+		getJdbcTemplate().update(sql,new Object[] { ip,hostName,content });
+	}
+	
+	public List getStudents4Check_(){
+		String sql="select student_id from student_mgmt.v_students t where t.status=0 and user_type='EMBA'";
+		List list = getJdbcTemplate().query(sql, new RowMapper() {
+			public Object mapRow(ResultSet rs, int rowNum) throws SQLException {
+				Student student = new Student();
+				
+				student.setStudentId(rs.getString("STUDENT_ID"));
+				
+				return student;
+			}
+		});
+		return list;
+	}
+	
+	public int getLeaveSeat(String courseId){
+		String sql="select getLeaveSeat(?) from dual";
+		try{
+			return getJdbcTemplate().queryForInt(sql,new Object[]{courseId});
+		}catch(Exception e){
+			return -99;
+		}
+	}
+	
+	public String getProfessor(String courseId){
+		String sql="select get_professor(?) from dual";
+		try{
+			return (String)(getJdbcTemplate().queryForObject(sql,new Object[]{courseId},String.class));
+		}catch(Exception e){
+			return "";
+		}
+	}
+	public String getTa(String courseId){
+		String sql="select get_ta(?) from dual";
+		try{
+			return (String)(getJdbcTemplate().queryForObject(sql,new Object[]{courseId},String.class));
+		}catch(Exception e){
+			return "";
+		}
+	}
+	
+	//发邮件的时候，选中的课程要写在邮件里。  2019-4-29
+		public List getSelectedCourseList4Mail(String studentId){
+			timePrinter.printTimePoint("--started--");
+			
+			String sql = "SELECT C.COURSE_NAME,C.COURSE_ID, C.COURSE_START,C.COURSE_END,c.COURSECREDIT,c.CourseType"
+				//+ " decode(upper(c.courselocation),'SHANGHAI','上海Shanghai','上海','上海Shanghai','BEIJING','北京Beijing','北京','北京Beijing','SHENZHEN','深圳Shenzhen','深圳','深圳Shenzhen',c.courselocation) as courselocation "
+				+ " FROM student_mgmt.v_course_student_swap4emba C "
+				+ " WHERE nvl(c.delete_flag, 0) <> 1 and (c.CourseType = 1 or c.CourseType = 0) "
+				+ " and  student_id = '"+studentId+"' order by c.CourseType,c.course_start ";	
+			
+			
+	        
+			List list = getJdbcTemplate().query(sql, new RowMapper() {
+				public Object mapRow(ResultSet rs, int rowNum) throws SQLException {
+					
+					Course course = new Course();
+					course.setCourseName(rs.getString("COURSE_NAME"));
+					course.setCourseId(rs.getString("COURSE_ID"));
+					course.setCourseStartDate(rs.getString("COURSE_START"));
+					course.setCourseEndDate(rs.getString("COURSE_END"));
+					course.setCourseCredit(rs.getString("COURSECREDIT"));
+					course.setCourseType(rs.getString("COURSETYPE"));
+					
+					return course;
+					
+					
+				}
+			});	
+			timePrinter.printTimePoint("--end--");
+			return list;
+		}
+
+}
